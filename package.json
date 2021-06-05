@@ -1,0 +1,19 @@
+{
+  "name": "wb-cloud-aws",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "aws-cdk": "^1.102.0",
+    "dotenv": "^9.0.2",
+    "ts-node": "^10.0.0"
+  },
+  "scripts": {
+    "init:app": "cd aws; cdk init app --language=typescript",
+    "stack:production:diff": "cd aws; cdk --profile whitebeard diff WhiteBeardStack",
+    "stack:production:deploy": "cd aws; cdk --profile whitebeard deploy WhiteBeardStack",
+    "stack:production:destroy": "cd aws; cdk --profile whitebeard destroy WhiteBeardStack",
+    "stack:production:app:bootstrap:template": "cd aws; cdk --profile whitebeard bootstrap --show-template",
+    "stack:production:app:bootstrap": "cd aws; cdk --profile whitebeard bootstrap"
+  }
+}
