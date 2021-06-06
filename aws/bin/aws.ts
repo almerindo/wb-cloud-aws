@@ -3,27 +3,55 @@ import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
 import { AwsStack } from '../lib/aws-stack';
 
-const Main = async () => {
 
+export enum EStep {
+  'STEP0 - BUILD_INITIAL_INFRA',
+  'STEP1 - BUILD_ECR_SERVICE',
+  'STEP2 - BUILD_ECS_FARGATE_SERVICES',
+  'STEP OPTIONAL - BUILD_REDIS_ELASTIC_CACHE',
+
+}
+export const proccessInfra = async (arg: EStep) => {
+  
   const app = new cdk.App();
-  const stack = new AwsStack(app, 'WhiteBeardStack', {
-    /* If you don't specify 'env', this stack will be environment-agnostic.
-    * Account/Region-dependent features and context lookups will not work,
-    * but a single synthesized template can be deployed anywhere. */
+  const stack = new AwsStack(app, 'WhiteBeardStack', {}); //FIXME pegar do env
+  if (!stack.serviceName) throw new Error('ServiceName must be valid!');
 
-    /* Uncomment the next line to specialize this stack for the AWS Account
-    * and Region that are implied by the current CLI configuration. */
-    // env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+  switch (arg) {
+    
+    case EStep['STEP0 - BUILD_INITIAL_INFRA']:
+        await stack.loadEnvironments({SERVICE_NAME:stack.serviceName});
+        await stack.buildClusterAndVPC();  
+      break;
+    
+    case EStep['STEP1 - BUILD_ECR_SERVICE']:
+        stack.loadEnvironments({SERVICE_NAME:stack.serviceName});
+        stack.buildClusterAndVPC();
+        stack.buildECR({SERVICE_NAME:stack.serviceName});  
+        console.warn(`Now push one image to ECR!`)
+      break;
+  
+    case EStep['STEP2 - BUILD_ECS_FARGATE_SERVICES']:
+        stack.loadEnvironments({SERVICE_NAME:stack.serviceName});
+        stack.buildClusterAndVPC();
+        stack.buildECR({SERVICE_NAME:stack.serviceName}); 
+        //FIXME verify if There is a image in repository before creates a Fargate
+        stack.buildECS_APP_LoadBalanced({SERVICE_NAME:stack.serviceName});
+      break;
 
-    /* Uncomment the next line if you know exactly what Account and Region you
-    * want to deploy the stack to. */
-    // env: { account: '123456789012', region: 'us-east-1' },
 
-    /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
-  });
+    case EStep['STEP OPTIONAL - BUILD_REDIS_ELASTIC_CACHE']:
+        stack.loadEnvironments({SERVICE_NAME:stack.serviceName});
+        stack.buildClusterAndVPC();
+        stack.buildRedisCache();
+      break
+  
+    default:
+      break;
+  }
 
-  await stack.buildServices();
+  app.synth();
+  
 }
 
 
-Main();

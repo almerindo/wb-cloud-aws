@@ -6,7 +6,9 @@ import * as ecr from '@aws-cdk/aws-ecr';
 
 import * as ecs_patterns from "@aws-cdk/aws-ecs-patterns";
 
-import {LifecycleRule, TagStatus} from '@aws-cdk/aws-ecr';
+import * as elasticcache from '@aws-cdk/aws-elasticache'
+
+import { LifecycleRule, TagStatus } from '@aws-cdk/aws-ecr';
 
 import * as dotenv from 'dotenv'
 import { ApplicationLoadBalancedFargateService } from '@aws-cdk/aws-ecs-patterns';
@@ -30,7 +32,7 @@ export interface IENVIRONMENTS {
 }
 
 interface ILoadEEnvParameters {
-  SERVICE_NAME:string
+  SERVICE_NAME: string
 }
 
 export class AwsStack extends cdk.Stack {
@@ -38,19 +40,75 @@ export class AwsStack extends cdk.Stack {
   cluster: ecs.Cluster;
   repositories: Map<string, ecr.Repository> = new Map();
   appLoadBalenced: Map<string, ApplicationLoadBalancedFargateService> = new Map();
-  services: string[] = [];
-  environmentService: string;
+  serviceName: string | null;
+  environmentService: string ;
   envsParameters: IENVIRONMENTS;
 
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    
-    this.environmentService = process.env.ENVIRONMENT!=='production' ? 'dev': 'prod';
-    const SERVICES = process.env.SERVICES ? JSON.parse(process.env.SERVICES): null;
-    this.services = SERVICES;
 
-    // Stack básica VPC e Cluster ECS
+    this.environmentService = process.env.ENVIRONMENT !== 'production' ? 'dev' : 'prod';
+    this.serviceName = process.env.SERVICE_NAME  || null;
+
+  }
+
+  public async loadEnvironments({ SERVICE_NAME }: ILoadEEnvParameters): Promise<IENVIRONMENTS> {
+    const prefixPath = `/${this.environmentService}/${SERVICE_NAME}`;
+
+    console.info(`Reading env variables on AWS Parameter Store`);
+    console.info({ prefixPath });
+
+    const [
+      CPU_LIMIT,
+      MEMORY_LIMIT,
+      DESIRED_COUNT,
+      APP_PORT,
+      DATABASE_URI,
+      API_GERAL_TOKEN,
+      NEW_RELIC_ENABLED,
+      REDIS_HOST,
+      REDIS_PORT,
+      REDIS_TTL_EXPIRE
+    ] = await Promise.all(
+      [
+        getParam(`${prefixPath}/CPU_LIMIT`),
+        getParam(`${prefixPath}/MEMORY_LIMIT`),
+        getParam(`${prefixPath}/DESIRED_COUNT`),
+        getParam(`${prefixPath}/APP_PORT`),
+        getParam(`${prefixPath}/DATABASE_URI`),
+        getParam(`/${this.environmentService}/API_GERAL_TOKEN`),
+        getParam(`${prefixPath}/NEW_RELIC_ENABLED`),
+        getParam(`/${this.environmentService}/REDIS_HOST`),
+        getParam(`/${this.environmentService}/REDIS_PORT`),
+        getParam(`${prefixPath}/REDIS_TTL_EXPIRE`)
+      ]
+    )
+    
+    const envs: IENVIRONMENTS = {
+      CPU_LIMIT: String(CPU_LIMIT),
+      MEMORY_LIMIT: String(MEMORY_LIMIT),
+      DESIRED_COUNT: String(DESIRED_COUNT),
+
+      PORT: String(APP_PORT),
+      DATABASE_URI: String(DATABASE_URI),
+
+      API_GERAL_TOKEN: String(API_GERAL_TOKEN),
+      NEW_RELIC_ENABLED: String(NEW_RELIC_ENABLED),
+      REDIS_HOST: String(REDIS_HOST),
+      REDIS_PORT: String(REDIS_PORT),
+      REDIS_KEYPREFIX: `${SERVICE_NAME}-cache`,
+      REDIS_TTL_EXPIRE: String(REDIS_TTL_EXPIRE),
+
+    };
+
+    console.info({ envs })
+
+    return envs;
+  }
+
+  public async buildClusterAndVPC(){
+    console.info('Creates Basic Stack - Cluster and VPC')
     this.vpc = new ec2.Vpc(this, `${this.environmentService}-VPC`, {
       maxAzs: 2
     });
@@ -59,85 +117,92 @@ export class AwsStack extends cdk.Stack {
       vpc: this.vpc,
       clusterName: `wb-${this.environmentService}-cluster`,
     });
-
   }
 
-  public async loadEnvironments ({SERVICE_NAME}: ILoadEEnvParameters): Promise<IENVIRONMENTS>{
-    const prefixPath = `/${this.environmentService}/${SERVICE_NAME}`;
+  public async buildECR ({ SERVICE_NAME }: ILoadEEnvParameters ){
+    const nameECR = `${SERVICE_NAME}_${this.environmentService}_repo`;
 
-    console.info({prefixPath});
-    
-    const envs: IENVIRONMENTS = {
-      CPU_LIMIT: String(await getParam(`${prefixPath}/CPU_LIMIT`)),
-      MEMORY_LIMIT: String(await getParam(`${prefixPath}/MEMORY_LIMIT`)),
-      DESIRED_COUNT: String(await getParam(`${prefixPath}/DESIRED_COUNT`)),
+    const newRepo = new ecr.Repository(this, nameECR, {
+      imageScanOnPush: false,
+      imageTagMutability: ecr.TagMutability.MUTABLE,
+      repositoryName: nameECR,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      lifecycleRules: [
+        {
+          description: 'Mantem somente 2 imagens no repositório',
+          maxImageCount: 2, //FIXME pegar do parameter store
+          tagStatus: TagStatus.UNTAGGED,
+        }
+      ]
+    });
 
-      PORT: String(await getParam(`${prefixPath}/APP_PORT`)),
-      DATABASE_URI: String(await getParam(`${prefixPath}/DATABASE_URI`)),
-
-      API_GERAL_TOKEN : String(await getParam(`/${this.environmentService}/API_GERAL_TOKEN`)),
-      NEW_RELIC_ENABLED: String(await getParam(`${prefixPath}/NEW_RELIC_ENABLED`)),
-      REDIS_HOST: String(await getParam(`/${this.environmentService}/REDIS_HOST`)),
-      REDIS_PORT: String(await getParam(`/${this.environmentService}/REDIS_PORT`)),
-      REDIS_KEYPREFIX: `${SERVICE_NAME}-cache`,
-      REDIS_TTL_EXPIRE: String(await getParam(`${prefixPath}/REDIS_TTL_EXPIRE`)),
-
-    };
-
-    console.info({envs})
-
-    return envs;
+    this.repositories.set(SERVICE_NAME, newRepo);
   }
 
-  public async buildServices() {
-    if (this.services && this.services.length>0) {
-      for (let index = 0; index < this.services.length; index++) {
-        const service = this.services[index];
+  public async buildECS_APP_LoadBalanced({ SERVICE_NAME }: ILoadEEnvParameters) {
+    const newRepo = this.repositories.get(SERVICE_NAME);
+    if (!newRepo) throw new Error('ECR repository NOT FOUND!');
+
+
+    const appLoadBalanced = new ecs_patterns.ApplicationLoadBalancedFargateService(this, SERVICE_NAME, {
+      cluster: this.cluster, // Required
+      cpu: Number(this.envsParameters.CPU_LIMIT), // Default is 256
+      desiredCount: Number(this.envsParameters.DESIRED_COUNT), // Default is 1
+      taskImageOptions: {
+        image: ecs.ContainerImage.fromEcrRepository(newRepo),
+        environment: this.envsParameters as unknown as {
+          [key: string]: string;
+        },
+        containerPort: Number(this.envsParameters.PORT),
         
-        console.info(service);
-        this.envsParameters = await this.loadEnvironments(
-          {
-            SERVICE_NAME:service
-          });
+      },
+      serviceName: SERVICE_NAME,
+      deploymentController: { type: ecs.DeploymentControllerType.ECS },
+      memoryLimitMiB: Number(this.envsParameters.MEMORY_LIMIT), // Default is 512
+      publicLoadBalancer: true // Default is false
 
+    });
 
-        const newRepo = new ecr.Repository(this, `${service}_repo`, {
-          imageScanOnPush: false,
-          imageTagMutability: ecr.TagMutability.MUTABLE,
-          repositoryName: `${service}_repo`,
-          removalPolicy: cdk.RemovalPolicy.DESTROY,
-          lifecycleRules: [
-            {
-              description: 'Mantem somente 2 imagens no repositório',
-              maxImageCount: 2, //FIXME pegar do parameter store
-              tagStatus: TagStatus.UNTAGGED,
-            }
-          ]
-        });
+    this.appLoadBalenced.set(SERVICE_NAME, appLoadBalanced);
+  }
 
-       this.repositories.set(service, newRepo); 
+  public async buildRedisCache() {
+    const redisPort = 6379;
+    const redisSubnetGroup = new elasticcache.CfnSubnetGroup(this as any, 'redis-subnet-group', {
+      cacheSubnetGroupName: 'redis-subnet-group',
+      description: 'The redis subnet group id',
+      subnetIds: this.vpc.privateSubnets.map(subnet => subnet.subnetId),
+    });
 
-        const appLoadBalanced = new ecs_patterns.ApplicationLoadBalancedFargateService(this, service, {
-          cluster: this.cluster, // Required
-          cpu: Number(this.envsParameters.CPU_LIMIT), // Default is 256
-          desiredCount: Number(this.envsParameters.DESIRED_COUNT), // Default is 1
-          taskImageOptions: { 
-            image: ecs.ContainerImage.fromEcrRepository(newRepo) ,
-            environment: this.envsParameters as unknown as {
-              [key: string]: string;
-            },
-            containerPort: Number(this.envsParameters.PORT),
-          },
-          serviceName: service,
-          deploymentController: {type: ecs.DeploymentControllerType.ECS},
-          memoryLimitMiB: Number(this.envsParameters.MEMORY_LIMIT), // Default is 512
-          publicLoadBalancer: true // Default is false
-          
-        });
-        
-        this.appLoadBalenced.set(service,appLoadBalanced);
-      }
-    }
+    // The security group that defines network level access to the cluster
+    const redisSecurityGroup = new ec2.SecurityGroup(this, 'redis-security-group',
+      {
+        vpc: this.vpc,
+        allowAllOutbound: true,
+        securityGroupName: 'redis-security-group',
+      });
+    redisSecurityGroup.addIngressRule(ec2.Peer.ipv4(this.vpc.vpcCidrBlock), ec2.Port.tcp(redisPort), 'Ingress LAN');
+
+    const redisConnections = new ec2.Connections({
+      securityGroups: [redisSecurityGroup],
+      defaultPort: ec2.Port.tcp(redisPort)
+    });
+
+    const redis = new elasticcache.CfnCacheCluster(this as any, 'redis-cluster', {
+      cacheNodeType: 'cache.t2.micro',
+      engine: 'redis',
+      engineVersion: '6.x',
+      numCacheNodes: 1,
+      clusterName: 'redis-cluster-cache',
+      port: redisPort,
+      cacheSubnetGroupName: redisSubnetGroup.cacheSubnetGroupName,
+      vpcSecurityGroupIds: [redisSecurityGroup.securityGroupId]
+    });
+    redis.addDependsOn(redisSubnetGroup);
+
+    const redisUrl = "redis://" + redis.attrRedisEndpointAddress + ":" + redis.attrRedisEndpointPort;
+    console.info({ redisUrl });
+
   }
 
 }
