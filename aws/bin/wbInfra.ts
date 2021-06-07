@@ -49,7 +49,7 @@ const Main = async () =>{
     },
   );
   
-  console.info('AQUIIII',JSON.stringify(args));
+  console.info('Conf -> ',JSON.stringify(args));
   await proccessInfra(getCode(args));
   
 }

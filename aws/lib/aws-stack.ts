@@ -41,19 +41,23 @@ export class AwsStack extends cdk.Stack {
   repositories: Map<string, ecr.Repository> = new Map();
   appLoadBalenced: Map<string, ApplicationLoadBalancedFargateService> = new Map();
   serviceName: string | null;
+  services: string[] = [];
   environmentService: string ;
   envsParameters: IENVIRONMENTS;
+  mapEnvParameters: Map<string, IENVIRONMENTS> = new Map();
+
 
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
 
     this.environmentService = process.env.ENVIRONMENT !== 'production' ? 'dev' : 'prod';
-    this.serviceName = process.env.SERVICE_NAME  || null;
+    // this.serviceName = process.env.SERVICE_NAME  || null;
+    this.services = process.env.SERVICES ? JSON.parse(process.env.SERVICES) : null;
 
   }
 
-  public async loadEnvironments({ SERVICE_NAME }: ILoadEEnvParameters): Promise<IENVIRONMENTS> {
+  private async loadEnvironments({ SERVICE_NAME }: ILoadEEnvParameters): Promise<IENVIRONMENTS> {
     const prefixPath = `/${this.environmentService}/${SERVICE_NAME}`;
 
     console.info(`Reading env variables on AWS Parameter Store`);
@@ -76,12 +80,14 @@ export class AwsStack extends cdk.Stack {
         getParam(`${prefixPath}/MEMORY_LIMIT`),
         getParam(`${prefixPath}/DESIRED_COUNT`),
         getParam(`${prefixPath}/APP_PORT`),
+
         getParam(`${prefixPath}/DATABASE_URI`),
-        getParam(`/${this.environmentService}/API_GERAL_TOKEN`),
+        getParam(`${prefixPath}/API_GERAL_TOKEN`),
         getParam(`${prefixPath}/NEW_RELIC_ENABLED`),
-        getParam(`/${this.environmentService}/REDIS_HOST`),
-        getParam(`/${this.environmentService}/REDIS_PORT`),
-        getParam(`${prefixPath}/REDIS_TTL_EXPIRE`)
+        
+        getParam(`${prefixPath}/REDIS_HOST`),
+        getParam(`${prefixPath}/REDIS_PORT`),
+        getParam(`${prefixPath}/REDIS_TTL_EXPIRE`),
       ]
     )
     
@@ -107,19 +113,28 @@ export class AwsStack extends cdk.Stack {
     return envs;
   }
 
+  public async mapEnvironments(): Promise<Map<string, IENVIRONMENTS>> {
+    for (let index = 0; index < this.services.length; index++) {
+      const serviceName = this.services[index];
+      this.mapEnvParameters.set(serviceName, await this.loadEnvironments({SERVICE_NAME: serviceName}));
+    }
+
+    return this.mapEnvParameters;
+  }
+
   public async buildClusterAndVPC(){
     console.info('Creates Basic Stack - Cluster and VPC')
     this.vpc = new ec2.Vpc(this, `${this.environmentService}-VPC`, {
       maxAzs: 2
     });
 
-    this.cluster = new ecs.Cluster(this, `wb-${this.environmentService}-cluster`, {
+    this.cluster = new ecs.Cluster(this, `qd-${this.environmentService}-cluster`, {
       vpc: this.vpc,
-      clusterName: `wb-${this.environmentService}-cluster`,
+      clusterName: `qd-${this.environmentService}-cluster`,
     });
   }
 
-  public async buildECR ({ SERVICE_NAME }: ILoadEEnvParameters ){
+  private async buildECR ({ SERVICE_NAME }: ILoadEEnvParameters ){
     const nameECR = `${SERVICE_NAME}_${this.environmentService}_repo`;
 
     const newRepo = new ecr.Repository(this, nameECR, {
@@ -139,31 +154,46 @@ export class AwsStack extends cdk.Stack {
     this.repositories.set(SERVICE_NAME, newRepo);
   }
 
-  public async buildECS_APP_LoadBalanced({ SERVICE_NAME }: ILoadEEnvParameters) {
+  public async buildECRS () {
+    for (let index = 0; index < this.services.length; index++) {
+      const serviceName = this.services[index];
+      this.buildECR({SERVICE_NAME: serviceName});
+    }
+  }
+
+  private async buildECS_APP_LoadBalanced({ SERVICE_NAME }: ILoadEEnvParameters) {
     const newRepo = this.repositories.get(SERVICE_NAME);
     if (!newRepo) throw new Error('ECR repository NOT FOUND!');
 
+    const serviceEvs = this.mapEnvParameters.get(SERVICE_NAME);
 
     const appLoadBalanced = new ecs_patterns.ApplicationLoadBalancedFargateService(this, SERVICE_NAME, {
       cluster: this.cluster, // Required
-      cpu: Number(this.envsParameters.CPU_LIMIT), // Default is 256
-      desiredCount: Number(this.envsParameters.DESIRED_COUNT), // Default is 1
+      cpu: Number(serviceEvs?.CPU_LIMIT || 256), // Default is 256
+      desiredCount: Number(serviceEvs?.DESIRED_COUNT || 1), // Default is 1
       taskImageOptions: {
         image: ecs.ContainerImage.fromEcrRepository(newRepo),
-        environment: this.envsParameters as unknown as {
+        environment: serviceEvs as unknown as {
           [key: string]: string;
         },
-        containerPort: Number(this.envsParameters.PORT),
+        containerPort: Number(serviceEvs?.PORT || 3000),
         
       },
       serviceName: SERVICE_NAME,
       deploymentController: { type: ecs.DeploymentControllerType.ECS },
-      memoryLimitMiB: Number(this.envsParameters.MEMORY_LIMIT), // Default is 512
+      memoryLimitMiB: Number(serviceEvs?.MEMORY_LIMIT || 512), // Default is 512
       publicLoadBalancer: true // Default is false
 
     });
 
     this.appLoadBalenced.set(SERVICE_NAME, appLoadBalanced);
+  }
+
+  public async buildECS_APP_LoadBalanced_SERVICES() {
+    for (let index = 0; index < this.services.length; index++) {
+      const serviceName = this.services[index];
+      await this.buildECS_APP_LoadBalanced({SERVICE_NAME: serviceName});
+    }
   }
 
   public async buildRedisCache() {
