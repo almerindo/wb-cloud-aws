@@ -8,7 +8,8 @@
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
-    "cdk": "cdk"
+    "cdk": "cdk",
+    "infra-base": "cdk --profile querodelivery deploy qdStack"
   },
   "devDependencies": {
     "@aws-cdk/assert": "1.102.0",
