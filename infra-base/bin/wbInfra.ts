@@ -38,8 +38,8 @@ const Main = async () =>{
     {
         build_cluster_vpc: {type: Boolean, description: 'Creates initial infra with a Cluster and VPC' },
         build_ecr_service: {type: Boolean,  description: 'Creates a ECR service on Cluster and VPC' },
-        build_ecs_fargate_service: {type: Boolean,  description: 'Creates a ECS Application LoadBalanced service on Cluster and VPC. This service depends on the ECR service' },
         build_redis_elastic_cache: {type: Boolean,  description: 'Add a elasticcache service in the cluster and vpc' },   
+        build_ecs_fargate_service: {type: Boolean,  description: 'Creates a ECS Application LoadBalanced service on Cluster and VPC. This service depends on the ECR service' },
         help: { type: Boolean, optional: true, alias: 'h', description: 'Prints this usage guide' },
     },
     {
@@ -54,4 +54,4 @@ const Main = async () =>{
   
 }
 
-Main();
+export default Main;

@@ -31,6 +31,8 @@ crie os parameter store na AWS necessários para rodar o projeto com seus respec
 /prod/wb-service/DATABASE_URI	= mongodb+srv://<USER>:<PASS>@wb.mongodb.net/whitebeardDatabase
 ```
 
+infra-base
+
 ## Instalando os pacotes necessários:
 - [ ]: Entre no diretório raiz do projeto `cd  wb-cloud-aws` e digite `yarn`
 
